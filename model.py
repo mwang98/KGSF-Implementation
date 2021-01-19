@@ -1,6 +1,6 @@
-from models.transformer import TorchGeneratorModel,_build_encoder,_build_decoder,_build_encoder_mask, _build_encoder4kg, _build_decoder4kg
-from models.utils import _create_embeddings,_create_entity_embeddings
-from models.graph import SelfAttentionLayer,SelfAttentionLayer_batch
+from models.transformer import TorchGeneratorModel, _build_encoder, _build_decoder, _build_encoder_mask, _build_encoder4kg, _build_decoder4kg
+from models.utils import _create_embeddings, _create_entity_embeddings
+from models.graph import SelfAttentionLayer, SelfAttentionLayer_batch
 from torch_geometric.nn.conv.rgcn_conv import RGCNConv
 from torch_geometric.nn.conv.gcn_conv import GCNConv
 import pickle as pkl
@@ -11,6 +11,7 @@ import os
 from collections import defaultdict
 import numpy as np
 import json
+
 
 def _load_kg_embeddings(entity2entityId, dim, embedding_path):
     kg_embeddings = torch.zeros(len(entity2entityId), dim)
@@ -25,7 +26,10 @@ def _load_kg_embeddings(entity2entityId, dim, embedding_path):
             kg_embeddings[entityId] = embedding
     return kg_embeddings
 
+
 EDGE_TYPES = [58, 172]
+
+
 def _edge_list(kg, n_entity, hop):
     edge_list = []
     for h in range(hop):
@@ -37,7 +41,8 @@ def _edge_list(kg, n_entity, hop):
             if entity not in kg:
                 continue
             for tail_and_relation in kg[entity]:
-                if entity != tail_and_relation[1] and tail_and_relation[0] != 185 :# and tail_and_relation[0] in EDGE_TYPES:
+                # and tail_and_relation[0] in EDGE_TYPES:
+                if entity != tail_and_relation[1] and tail_and_relation[0] != 185:
                     edge_list.append((entity, tail_and_relation[1], tail_and_relation[0]))
                     edge_list.append((tail_and_relation[1], entity, tail_and_relation[0]))
 
@@ -51,21 +56,23 @@ def _edge_list(kg, n_entity, hop):
 
     return [(h, t, relation_idx[r]) for h, t, r in edge_list if relation_cnt[r] > 1000], len(relation_idx)
 
+
 def concept_edge_list4GCN():
-    node2index=json.load(open('key2index_3rd.json',encoding='utf-8'))
-    f=open('conceptnet_edges2nd.txt',encoding='utf-8')
-    edges=set()
-    stopwords=set([word.strip() for word in open('stopwords.txt',encoding='utf-8')])
+    node2index = json.load(open('data/key2index_3rd.json', encoding='utf-8'))
+    f = open('data/conceptnet_edges2nd.txt', encoding='utf-8')
+    edges = set()
+    stopwords = set([word.strip() for word in open('data/stopwords.txt', encoding='utf-8')])
     for line in f:
-        lines=line.strip().split('\t')
-        entity0=node2index[lines[1].split('/')[0]]
-        entity1=node2index[lines[2].split('/')[0]]
+        lines = line.strip().split('\t')
+        entity0 = node2index[lines[1].split('/')[0]]
+        entity1 = node2index[lines[2].split('/')[0]]
         if lines[1].split('/')[0] in stopwords or lines[2].split('/')[0] in stopwords:
             continue
-        edges.add((entity0,entity1))
-        edges.add((entity1,entity0))
-    edge_set=[[co[0] for co in list(edges)],[co[1] for co in list(edges)]]
+        edges.add((entity0, entity1))
+        edges.add((entity1, entity0))
+    edge_set = [[co[0] for co in list(edges)], [co[1] for co in list(edges)]]
     return torch.LongTensor(edge_set).cuda()
+
 
 class CrossModel(nn.Module):
     def __init__(self, opt, dictionary, is_finetune=False, padding_idx=0, start_idx=1, end_idx=2, longest_label=1):
@@ -86,9 +93,9 @@ class CrossModel(nn.Module):
             dictionary, opt['embedding_size'], self.pad_idx
         )
 
-        self.concept_embeddings=_create_entity_embeddings(
+        self.concept_embeddings = _create_entity_embeddings(
             opt['n_concept']+1, opt['dim'], 0)
-        self.concept_padding=0
+        self.concept_padding = 0
 
         self.kg = pkl.load(
             open("data/subkg.pkl", "rb")
@@ -122,8 +129,8 @@ class CrossModel(nn.Module):
         self.db_norm = nn.Linear(opt['dim'], opt['embedding_size'])
         self.kg_norm = nn.Linear(opt['dim'], opt['embedding_size'])
 
-        self.db_attn_norm=nn.Linear(opt['dim'],opt['embedding_size'])
-        self.kg_attn_norm=nn.Linear(opt['dim'],opt['embedding_size'])
+        self.db_attn_norm = nn.Linear(opt['dim'], opt['embedding_size'])
+        self.kg_attn_norm = nn.Linear(opt['dim'], opt['embedding_size'])
 
         self.criterion = nn.CrossEntropyLoss(reduce=False)
 
@@ -133,44 +140,46 @@ class CrossModel(nn.Module):
 
         self.user_norm = nn.Linear(opt['dim']*2, opt['dim'])
         self.gate_norm = nn.Linear(opt['dim'], 1)
-        self.copy_norm = nn.Linear(opt['embedding_size']*2+opt['embedding_size'], opt['embedding_size'])
+        self.copy_norm = nn.Linear(opt['embedding_size']*2 +
+                                   opt['embedding_size'], opt['embedding_size'])
         self.representation_bias = nn.Linear(opt['embedding_size'], len(dictionary) + 4)
 
         self.info_con_norm = nn.Linear(opt['dim'], opt['dim'])
         self.info_db_norm = nn.Linear(opt['dim'], opt['dim'])
         self.info_output_db = nn.Linear(opt['dim'], opt['n_entity'])
         self.info_output_con = nn.Linear(opt['dim'], opt['n_concept']+1)
-        self.info_con_loss = nn.MSELoss(size_average=False,reduce=False)
-        self.info_db_loss = nn.MSELoss(size_average=False,reduce=False)
+        self.info_con_loss = nn.MSELoss(size_average=False, reduce=False)
+        self.info_db_loss = nn.MSELoss(size_average=False, reduce=False)
 
         self.user_representation_to_bias_1 = nn.Linear(opt['dim'], 512)
         self.user_representation_to_bias_2 = nn.Linear(512, len(dictionary) + 4)
 
         self.output_en = nn.Linear(opt['dim'], opt['n_entity'])
 
-        self.embedding_size=opt['embedding_size']
-        self.dim=opt['dim']
+        self.embedding_size = opt['embedding_size']
+        self.dim = opt['dim']
 
         edge_list, self.n_relation = _edge_list(self.kg, opt['n_entity'], hop=2)
         edge_list = list(set(edge_list))
         print(len(edge_list), self.n_relation)
-        self.dbpedia_edge_sets=torch.LongTensor(edge_list).cuda()
+        self.dbpedia_edge_sets = torch.LongTensor(edge_list).cuda()
         self.db_edge_idx = self.dbpedia_edge_sets[:, :2].t()
         self.db_edge_type = self.dbpedia_edge_sets[:, 2]
 
-        self.dbpedia_RGCN=RGCNConv(opt['n_entity'], self.dim, self.n_relation, num_bases=opt['num_bases'])
+        self.dbpedia_RGCN = RGCNConv(opt['n_entity'], self.dim,
+                                     self.n_relation, num_bases=opt['num_bases'])
         #self.concept_RGCN=RGCNConv(opt['n_concept']+1, self.dim, self.n_con_relation, num_bases=opt['num_bases'])
-        self.concept_edge_sets=concept_edge_list4GCN()
-        self.concept_GCN=GCNConv(self.dim, self.dim)
+        self.concept_edge_sets = concept_edge_list4GCN()
+        self.concept_GCN = GCNConv(self.dim, self.dim)
 
         #self.concept_GCN4gen=GCNConv(self.dim, opt['embedding_size'])
 
-        w2i=json.load(open('word2index_redial.json',encoding='utf-8'))
-        self.i2w={w2i[word]:word for word in w2i}
+        w2i = json.load(open('word2index_redial.json', encoding='utf-8'))
+        self.i2w = {w2i[word]: word for word in w2i}
 
-        self.mask4key=torch.Tensor(np.load('mask4key.npy')).cuda()
-        self.mask4movie=torch.Tensor(np.load('mask4movie.npy')).cuda()
-        self.mask4=self.mask4key+self.mask4movie
+        self.mask4key = torch.Tensor(np.load('data/mask4key.npy')).cuda()
+        self.mask4movie = torch.Tensor(np.load('data/mask4movie.npy')).cuda()
+        self.mask4 = self.mask4key+self.mask4movie
         if is_finetune:
             params = [self.dbpedia_RGCN.parameters(), self.concept_GCN.parameters(),
                       self.concept_embeddings.parameters(),
@@ -212,36 +221,39 @@ class CrossModel(nn.Module):
         logits = []
         for i in range(maxlen):
             # todo, break early if all beams saw EOS
-            scores, incr_state = self.decoder(xs, encoder_states, encoder_states_kg, encoder_states_db, incr_state)
-            #batch*1*hidden
+            scores, incr_state = self.decoder(
+                xs, encoder_states, encoder_states_kg, encoder_states_db, incr_state)
+            # batch*1*hidden
             scores = scores[:, -1:, :]
             #scores = self.output(scores)
             kg_attn_norm = self.kg_attn_norm(attention_kg)
-            
+
             db_attn_norm = self.db_attn_norm(attention_db)
 
-            copy_latent = self.copy_norm(torch.cat([kg_attn_norm.unsqueeze(1), db_attn_norm.unsqueeze(1), scores], -1))
+            copy_latent = self.copy_norm(
+                torch.cat([kg_attn_norm.unsqueeze(1), db_attn_norm.unsqueeze(1), scores], -1))
 
             # logits = self.output(latent)
-            con_logits = self.representation_bias(copy_latent)*self.mask4.unsqueeze(0).unsqueeze(0)#F.linear(copy_latent, self.embeddings.weight)
+            # F.linear(copy_latent, self.embeddings.weight)
+            con_logits = self.representation_bias(copy_latent)*self.mask4.unsqueeze(0).unsqueeze(0)
             voc_logits = F.linear(scores, self.embeddings.weight)
             # print(logits.size())
             # print(mem_logits.size())
             #gate = F.sigmoid(self.gen_gate_norm(scores))
 
-            sum_logits = voc_logits + con_logits #* (1 - gate)
+            sum_logits = voc_logits + con_logits  # * (1 - gate)
             _, preds = sum_logits.max(dim=-1)
             #scores = F.linear(scores, self.embeddings.weight)
 
-            #print(attention_map)
-            #print(db_attention_map)
-            #print(preds.size())
-            #print(con_logits.size())
-            #exit()
-            #print(con_logits.squeeze(0).squeeze(0)[preds.squeeze(0).squeeze(0)])
-            #print(voc_logits.squeeze(0).squeeze(0)[preds.squeeze(0).squeeze(0)])
-            
-            #print(torch.topk(voc_logits.squeeze(0).squeeze(0),k=50)[1])
+            # print(attention_map)
+            # print(db_attention_map)
+            # print(preds.size())
+            # print(con_logits.size())
+            # exit()
+            # print(con_logits.squeeze(0).squeeze(0)[preds.squeeze(0).squeeze(0)])
+            # print(voc_logits.squeeze(0).squeeze(0)[preds.squeeze(0).squeeze(0)])
+
+            # print(torch.topk(voc_logits.squeeze(0).squeeze(0),k=50)[1])
 
             #sum_logits = scores
             # print(sum_logits.size())
@@ -283,45 +295,50 @@ class CrossModel(nn.Module):
         seqlen = ys.size(1)
         inputs = ys.narrow(1, 0, seqlen - 1)
         inputs = torch.cat([self._starts(bsz), inputs], 1)
-        latent, _ = self.decoder(inputs, encoder_states, encoder_states_kg, encoder_states_db) #batch*r_l*hidden
+        latent, _ = self.decoder(inputs, encoder_states, encoder_states_kg,
+                                 encoder_states_db)  # batch*r_l*hidden
 
-        kg_attention_latent=self.kg_attn_norm(attention_kg)
+        kg_attention_latent = self.kg_attn_norm(attention_kg)
 
-        #map=torch.bmm(latent,torch.transpose(kg_embs_norm,2,1))
-        #map_mask=((1-encoder_states_kg[1].float())*(-1e30)).unsqueeze(1)
-        #attention_map=F.softmax(map*map_mask,dim=-1)
-        #attention_latent=torch.bmm(attention_map,encoder_states_kg[0])
+        # map=torch.bmm(latent,torch.transpose(kg_embs_norm,2,1))
+        # map_mask=((1-encoder_states_kg[1].float())*(-1e30)).unsqueeze(1)
+        # attention_map=F.softmax(map*map_mask,dim=-1)
+        # attention_latent=torch.bmm(attention_map,encoder_states_kg[0])
 
-        db_attention_latent=self.db_attn_norm(attention_db)
+        db_attention_latent = self.db_attn_norm(attention_db)
 
-        #db_map=torch.bmm(latent,torch.transpose(db_embs_norm,2,1))
-        #db_map_mask=((1-encoder_states_db[1].float())*(-1e30)).unsqueeze(1)
-        #db_attention_map=F.softmax(db_map*db_map_mask,dim=-1)
-        #db_attention_latent=torch.bmm(db_attention_map,encoder_states_db[0])
+        # db_map=torch.bmm(latent,torch.transpose(db_embs_norm,2,1))
+        # db_map_mask=((1-encoder_states_db[1].float())*(-1e30)).unsqueeze(1)
+        # db_attention_map=F.softmax(db_map*db_map_mask,dim=-1)
+        # db_attention_latent=torch.bmm(db_attention_map,encoder_states_db[0])
 
-        copy_latent=self.copy_norm(torch.cat([kg_attention_latent.unsqueeze(1).repeat(1,seqlen,1), db_attention_latent.unsqueeze(1).repeat(1,seqlen,1), latent],-1))
+        copy_latent = self.copy_norm(torch.cat([kg_attention_latent.unsqueeze(1).repeat(
+            1, seqlen, 1), db_attention_latent.unsqueeze(1).repeat(1, seqlen, 1), latent], -1))
 
         #logits = self.output(latent)
-        con_logits = self.representation_bias(copy_latent)*self.mask4.unsqueeze(0).unsqueeze(0)#F.linear(copy_latent, self.embeddings.weight)
+        # F.linear(copy_latent, self.embeddings.weight)
+        con_logits = self.representation_bias(copy_latent)*self.mask4.unsqueeze(0).unsqueeze(0)
         logits = F.linear(latent, self.embeddings.weight)
         # print(logits.size())
         # print(mem_logits.size())
-        #gate=F.sigmoid(self.gen_gate_norm(latent))
+        # gate=F.sigmoid(self.gen_gate_norm(latent))
 
-        sum_logits = logits+con_logits#*(1-gate)
+        sum_logits = logits+con_logits  # *(1-gate)
         _, preds = sum_logits.max(dim=2)
         return logits, preds
 
     def infomax_loss(self, con_nodes_features, db_nodes_features, con_user_emb, db_user_emb, con_label, db_label, mask):
-        #batch*dim
-        #node_count*dim
-        con_emb=self.info_con_norm(con_user_emb)
-        db_emb=self.info_db_norm(db_user_emb)
+        # batch*dim
+        # node_count*dim
+        con_emb = self.info_con_norm(con_user_emb)
+        db_emb = self.info_db_norm(db_user_emb)
         con_scores = F.linear(db_emb, con_nodes_features, self.info_output_con.bias)
         db_scores = F.linear(con_emb, db_nodes_features, self.info_output_db.bias)
 
-        info_db_loss=torch.sum(self.info_db_loss(db_scores,db_label.cuda().float()),dim=-1)*mask.cuda()
-        info_con_loss=torch.sum(self.info_con_loss(con_scores,con_label.cuda().float()),dim=-1)*mask.cuda()
+        info_db_loss = torch.sum(self.info_db_loss(
+            db_scores, db_label.cuda().float()), dim=-1)*mask.cuda()
+        info_con_loss = torch.sum(self.info_con_loss(
+            con_scores, con_label.cuda().float()), dim=-1)*mask.cuda()
 
         return torch.mean(info_db_loss), torch.mean(info_con_loss)
 
@@ -373,10 +390,11 @@ class CrossModel(nn.Module):
 
         # graph network
         db_nodes_features = self.dbpedia_RGCN(None, self.db_edge_idx, self.db_edge_type)
-        con_nodes_features=self.concept_GCN(self.concept_embeddings.weight,self.concept_edge_sets)
+        con_nodes_features = self.concept_GCN(
+            self.concept_embeddings.weight, self.concept_edge_sets)
 
         user_representation_list = []
-        db_con_mask=[]
+        db_con_mask = []
         for i, seed_set in enumerate(seed_sets):
             if seed_set == []:
                 user_representation_list.append(torch.zeros(self.dim).cuda())
@@ -387,51 +405,54 @@ class CrossModel(nn.Module):
             user_representation_list.append(user_representation)
             db_con_mask.append(torch.ones([1]))
 
-        db_user_emb=torch.stack(user_representation_list)
-        db_con_mask=torch.stack(db_con_mask)
+        db_user_emb = torch.stack(user_representation_list)
+        db_con_mask = torch.stack(db_con_mask)
 
-        graph_con_emb=con_nodes_features[concept_mask]
-        con_emb_mask=concept_mask==self.concept_padding
+        graph_con_emb = con_nodes_features[concept_mask]
+        con_emb_mask = concept_mask == self.concept_padding
 
-        con_user_emb=graph_con_emb
-        con_user_emb,attention=self.self_attn(con_user_emb,con_emb_mask.cuda())
-        user_emb=self.user_norm(torch.cat([con_user_emb,db_user_emb],dim=-1))
+        con_user_emb = graph_con_emb
+        con_user_emb, attention = self.self_attn(con_user_emb, con_emb_mask.cuda())
+        user_emb = self.user_norm(torch.cat([con_user_emb, db_user_emb], dim=-1))
         uc_gate = F.sigmoid(self.gate_norm(user_emb))
         user_emb = uc_gate * db_user_emb + (1 - uc_gate) * con_user_emb
         entity_scores = F.linear(user_emb, db_nodes_features, self.output_en.bias)
         #entity_scores = scores_db * gate + scores_con * (1 - gate)
-        #entity_scores=(scores_db+scores_con)/2
+        # entity_scores=(scores_db+scores_con)/2
 
-        #mask loss
-        #m_emb=db_nodes_features[labels.cuda()]
-        #mask_mask=concept_mask!=self.concept_padding
-        mask_loss=0#self.mask_predict_loss(m_emb, attention, xs, mask_mask.cuda(),rec.float())
+        # mask loss
+        # m_emb=db_nodes_features[labels.cuda()]
+        # mask_mask=concept_mask!=self.concept_padding
+        mask_loss = 0  # self.mask_predict_loss(m_emb, attention, xs, mask_mask.cuda(),rec.float())
 
-        info_db_loss, info_con_loss=self.infomax_loss(con_nodes_features,db_nodes_features,con_user_emb,db_user_emb,con_label,db_label,db_con_mask)
+        info_db_loss, info_con_loss = self.infomax_loss(
+            con_nodes_features, db_nodes_features, con_user_emb, db_user_emb, con_label, db_label, db_con_mask)
 
         #entity_scores = F.softmax(entity_scores.cuda(), dim=-1).cuda()
 
-        rec_loss=self.criterion(entity_scores.squeeze(1).squeeze(1).float(), labels.cuda())
+        rec_loss = self.criterion(entity_scores.squeeze(1).squeeze(1).float(), labels.cuda())
         #rec_loss=self.klloss(entity_scores.squeeze(1).squeeze(1).float(), labels.float().cuda())
         rec_loss = torch.sum(rec_loss*rec.float().cuda())
 
-        self.user_rep=user_emb
+        self.user_rep = user_emb
 
-        #generation---------------------------------------------------------------------------------------------------
-        con_nodes_features4gen=con_nodes_features#self.concept_GCN4gen(con_nodes_features,self.concept_edge_sets)
+        # generation---------------------------------------------------------------------------------------------------
+        # self.concept_GCN4gen(con_nodes_features,self.concept_edge_sets)
+        con_nodes_features4gen = con_nodes_features
         con_emb4gen = con_nodes_features4gen[concept_mask]
         con_mask4gen = concept_mask != self.concept_padding
-        #kg_encoding=self.kg_encoder(con_emb4gen.cuda(),con_mask4gen.cuda())
-        kg_encoding=(self.kg_norm(con_emb4gen),con_mask4gen.cuda())
+        # kg_encoding=self.kg_encoder(con_emb4gen.cuda(),con_mask4gen.cuda())
+        kg_encoding = (self.kg_norm(con_emb4gen), con_mask4gen.cuda())
 
-        db_emb4gen=db_nodes_features[entity_vector] #batch*50*dim
-        db_mask4gen=entity_vector!=0
-        #db_encoding=self.db_encoder(db_emb4gen.cuda(),db_mask4gen.cuda())
-        db_encoding=(self.db_norm(db_emb4gen),db_mask4gen.cuda())
+        db_emb4gen = db_nodes_features[entity_vector]  # batch*50*dim
+        db_mask4gen = entity_vector != 0
+        # db_encoding=self.db_encoder(db_emb4gen.cuda(),db_mask4gen.cuda())
+        db_encoding = (self.db_norm(db_emb4gen), db_mask4gen.cuda())
 
         if test == False:
             # use teacher forcing
-            scores, preds = self.decode_forced(encoder_states, kg_encoding, db_encoding, con_user_emb, db_user_emb, mask_ys)
+            scores, preds = self.decode_forced(
+                encoder_states, kg_encoding, db_encoding, con_user_emb, db_user_emb, mask_ys)
             gen_loss = torch.mean(self.compute_loss(scores, mask_ys))
 
         else:
@@ -545,7 +566,8 @@ class CrossModel(nn.Module):
     def output(self, tensor):
         # project back to vocabulary
         output = F.linear(tensor, self.embeddings.weight)
-        up_bias = self.user_representation_to_bias_2(F.relu(self.user_representation_to_bias_1(self.user_rep)))
+        up_bias = self.user_representation_to_bias_2(
+            F.relu(self.user_representation_to_bias_1(self.user_rep)))
         # up_bias = self.user_representation_to_bias_3(F.relu(self.user_representation_to_bias_2(F.relu(self.user_representation_to_bias_1(self.user_representation)))))
         # Expand to the whole sequence
         up_bias = up_bias.unsqueeze(dim=1)
