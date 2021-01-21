@@ -43,10 +43,11 @@ class dataset(object):
         # if 'train' in filename:
 
         # self.prepare_word2vec()
-        self.word2index = json.load(open('word2index_redial.json', encoding='utf-8'))
+        self.word2index = json.load(open('data/word2index_redial.json', encoding='utf-8'))
         self.key2index = json.load(open('data/key2index_3rd.json', encoding='utf-8'))
 
-        self.stopwords = set([word.strip() for word in open('data/stopwords.txt', encoding='utf-8')])
+        self.stopwords = set([word.strip()
+                              for word in open('data/stopwords.txt', encoding='utf-8')])
 
         # self.co_occurance_ext(self.data)
         # exit()
@@ -160,7 +161,8 @@ class dataset(object):
             assert len(concept_mask) == self.max_c_length
             assert len(dbpedia_mask) == self.max_c_length
 
-            data_set.append([np.array(context), c_lengths, np.array(response), r_length, np.array(mask_response), mask_r_length, line['entity'],
+            data_set.append([np.array(context), c_lengths, np.array(response), r_length,
+                             np.array(mask_response), mask_r_length, line['entity'],
                              line['movie'], concept_mask, dbpedia_mask, line['rec']])
         return data_set
 
