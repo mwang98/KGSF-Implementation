@@ -32,10 +32,11 @@ import json
 import argparse
 import pickle as pkl
 from dataset import dataset, CRSdataset
-from model import CrossModel
+from model import CrossModel, TrainType
 import torch.nn as nn
 from torch import optim
 import torch
+from torch.utils.tensorboard import SummaryWriter
 from nltk.translate.bleu_score import sentence_bleu
 
 import pprint
@@ -113,6 +114,7 @@ class TrainLoop_fusion_rec():
 
         self.batch_size = self.opt['batch_size']
         self.epoch = self.opt['epoch']
+        self.writer = SummaryWriter(flush_secs=30)
 
         self.use_cuda = opt['use_cuda']
         if opt['load_dict'] != None:
@@ -153,73 +155,89 @@ class TrainLoop_fusion_rec():
             self.model.cuda()
 
     def train(self):
-        # self.model.load_model()
         losses = []
-        best_val_rec = 0
+        best_val_rec, step = 0, 0
         rec_stop = False
+
+        # train for 3 epochs with MIM loss
         for i in range(3):
             train_set = CRSdataset(self.train_dataset.data_process(),
                                    self.opt['n_entity'], self.opt['n_concept'])
             train_dataset_loader = torch.utils.data.DataLoader(dataset=train_set,
                                                                batch_size=self.batch_size,
                                                                shuffle=False)
-            num = 0
-            for context, c_lengths, response, r_length, mask_response, mask_r_length, entity, entity_vector, movie, concept_mask, dbpedia_mask, concept_vec, db_vec, rec in tqdm(train_dataset_loader):
-                seed_sets = []
-                batch_size = context.shape[0]
-                for b in range(batch_size):
-                    seed_set = entity[b].nonzero().view(-1).tolist()
-                    seed_sets.append(seed_set)
+
+            for i, (context, c_lengths, response, r_length, mask_response, mask_r_length, entity, entity_vector,
+                    movie, concept_mask, dbpedia_mask, concept_vec, db_vec, rec) in enumerate(tqdm(train_dataset_loader)):
+
+                seed_sets = [en.nonzero().view(-1).tolist() for en in entity]
+                # batch_size = context.shape[0]
+                # for b in range(batch_size):
+                #     seed_set = entity[b].nonzero().view(-1).tolist()
+                #     seed_sets.append(seed_set)
+
                 self.model.train()
                 self.zero_grad()
 
-                scores, preds, rec_scores, rec_loss, gen_loss, mask_loss, info_db_loss, _ = self.model(context.cuda(), response.cuda(), mask_response.cuda(),
-                                                                                                       concept_mask, dbpedia_mask, seed_sets, movie, concept_vec, db_vec, entity_vector.cuda(), rec, test=False)
+                # forward
+                scores, preds, rec_scores, rec_loss, gen_loss, mask_loss, info_db_loss, _ = self.model(
+                    context.cuda(), concept_mask, dbpedia_mask, concept_vec, db_vec, seed_sets, entity_vector.cuda(
+                    ), TrainType.TRAIN, response.cuda(), mask_response.cuda(), movie, rec)
 
-                joint_loss = info_db_loss  # +info_con_loss
-
+                # update model
+                joint_loss = info_db_loss
                 losses.append([info_db_loss])
                 self.backward(joint_loss)
                 self.update_params()
-                if num % 50 == 0:
-                    print('info db loss is %f' % (sum([l[0] for l in losses])/len(losses)))
-                    #print('info con loss is %f'%(sum([l[1] for l in losses])/len(losses)))
+
+                # monitor
+                if i % 100 == 0:
+                    self.writer.add_scalar('Pre/Loss/MIM/Train',
+                                           sum([l[0] for l in losses])/len(losses), step)
+                    step += 1
                     losses = []
-                num += 1
 
         print("masked loss pre-trained")
         losses = []
+        step = 0
 
+        # train with recommendation task
         for i in range(self.epoch):
             train_set = CRSdataset(self.train_dataset.data_process(),
                                    self.opt['n_entity'], self.opt['n_concept'])
             train_dataset_loader = torch.utils.data.DataLoader(dataset=train_set,
                                                                batch_size=self.batch_size,
                                                                shuffle=False)
-            num = 0
-            for context, c_lengths, response, r_length, mask_response, mask_r_length, entity, entity_vector, movie, concept_mask, dbpedia_mask, concept_vec, db_vec, rec in tqdm(train_dataset_loader):
-                seed_sets = []
-                batch_size = context.shape[0]
-                for b in range(batch_size):
-                    seed_set = entity[b].nonzero().view(-1).tolist()
-                    seed_sets.append(seed_set)
+
+            for j, (context, c_lengths, response, r_length, mask_response, mask_r_length, entity, entity_vector,
+                    movie, concept_mask, dbpedia_mask, concept_vec, db_vec, rec) in enumerate(tqdm(train_dataset_loader)):
+
+                seed_sets = [en.nonzero().view(-1).tolist() for en in entity]
+
                 self.model.train()
                 self.zero_grad()
 
-                scores, preds, rec_scores, rec_loss, gen_loss, mask_loss, info_db_loss, _ = self.model(context.cuda(), response.cuda(
-                ), mask_response.cuda(), concept_mask, dbpedia_mask, seed_sets, movie, concept_vec, db_vec, entity_vector.cuda(), rec, test=False)
+                # forward
+                scores, preds, rec_scores, rec_loss, gen_loss, mask_loss, info_db_loss, info_con_loss = self.model(
+                    context.cuda(), concept_mask, dbpedia_mask, concept_vec, db_vec, seed_sets, entity_vector.cuda(
+                    ), TrainType.TRAIN, response.cuda(), mask_response.cuda(), movie, rec)
 
-                joint_loss = rec_loss+0.025*info_db_loss  # +0.0*info_con_loss#+mask_loss*0.05
-
+                # update model
+                joint_loss = rec_loss+0.025*info_db_loss
                 losses.append([rec_loss, info_db_loss])
                 self.backward(joint_loss)
                 self.update_params()
-                if num % 50 == 0:
-                    print('rec loss is %f' % (sum([l[0] for l in losses])/len(losses)))
-                    print('info db loss is %f' % (sum([l[1] for l in losses])/len(losses)))
-                    losses = []
-                num += 1
 
+                # monitor
+                if j % 100 == 0:
+                    self.writer.add_scalar('Rec/Loss/Rec/Train',
+                                           sum([l[0] for l in losses])/len(losses), step)
+                    self.writer.add_scalar('Rec/Loss/MIM/Train',
+                                           sum([l[1] for l in losses])/len(losses), step)
+                    step += 1
+                    losses = []
+
+            # validation
             output_metrics_rec = self.val()
 
             if best_val_rec > output_metrics_rec["recall@50"]+output_metrics_rec["recall@1"]:
@@ -228,6 +246,12 @@ class TrainLoop_fusion_rec():
                 best_val_rec = output_metrics_rec["recall@50"]+output_metrics_rec["recall@1"]
                 self.model.save_model()
                 print("recommendation model saved once------------------------------------------------")
+
+            # monitor recall and loss
+            self.writer.add_scalar('Rec/Recall/50/Valid', output_metrics_rec["recall@50"], i)
+            self.writer.add_scalar('Rec/Recall/10/Valid', output_metrics_rec["recall@10"], i)
+            self.writer.add_scalar('Rec/Recall/1/Valid', output_metrics_rec["recall@1"], i)
+            self.writer.add_scalar('Rec/Loss/Rec/Valid', output_metrics_rec['loss'], i)
 
             if rec_stop == True:
                 break
@@ -265,23 +289,29 @@ class TrainLoop_fusion_rec():
                                                          batch_size=self.batch_size,
                                                          shuffle=False)
         recs = []
-        for context, c_lengths, response, r_length, mask_response, mask_r_length, entity, entity_vector, movie, concept_mask, dbpedia_mask, concept_vec, db_vec, rec in tqdm(val_dataset_loader):
+        losses = []
+        for context, c_lengths, response, r_length, mask_response, mask_r_length, entity, entity_vector, \
+                movie, concept_mask, dbpedia_mask, concept_vec, db_vec, rec in tqdm(val_dataset_loader):
+
             with torch.no_grad():
                 seed_sets = []
                 batch_size = context.shape[0]
                 for b in range(batch_size):
                     seed_set = entity[b].nonzero().view(-1).tolist()
                     seed_sets.append(seed_set)
-                scores, preds, rec_scores, rec_loss, _, mask_loss, info_db_loss, info_con_loss = self.model(context.cuda(), response.cuda(), mask_response.cuda(
-                ), concept_mask, dbpedia_mask, seed_sets, movie, concept_vec, db_vec, entity_vector.cuda(), rec, test=True, maxlen=20, bsz=batch_size)
+
+                scores, preds, rec_scores, rec_loss, _, mask_loss, info_db_loss, info_con_loss = self.model(
+                    context.cuda(), concept_mask, dbpedia_mask, concept_vec, db_vec, seed_sets, entity_vector.cuda(
+                    ), TrainType.VALID, response.cuda(), mask_response.cuda(), movie, rec, maxlen=20, bsz=batch_size)
+
+                losses.append(rec_loss.item())
 
             recs.extend(rec.cpu())
-            # print(losses)
-            # exit()
             self.metrics_cal_rec(rec_loss, rec_scores, movie)
 
         output_dict_rec = {key: self.metrics_rec[key] /
                            self.metrics_rec['count'] for key in self.metrics_rec}
+        output_dict_rec['loss'] = sum(losses)/len(losses)
         print(output_dict_rec)
 
         return output_dict_rec
@@ -393,6 +423,7 @@ class TrainLoop_fusion_gen():
 
         self.batch_size = self.opt['batch_size']
         self.epoch = self.opt['epoch']
+        self.writer = SummaryWriter(flush_secs=30)
 
         self.use_cuda = opt['use_cuda']
         if opt['load_dict'] != None:
@@ -434,8 +465,8 @@ class TrainLoop_fusion_gen():
 
     def train(self):
         self.model.load_model()
-        losses = []
         best_val_gen = 1000
+        step = 0
         gen_stop = False
         for i in range(self.epoch*3):
             train_set = CRSdataset(self.train_dataset.data_process(
@@ -443,8 +474,9 @@ class TrainLoop_fusion_gen():
             train_dataset_loader = torch.utils.data.DataLoader(dataset=train_set,
                                                                batch_size=self.batch_size,
                                                                shuffle=False)
-            num = 0
-            for context, c_lengths, response, r_length, mask_response, mask_r_length, entity, entity_vector, movie, concept_mask, dbpedia_mask, concept_vec, db_vec, rec in tqdm(train_dataset_loader):
+            num, loss_epoch = 0, 0
+            for context, c_lengths, response, r_length, mask_response, mask_r_length, entity, entity_vector, \
+                    movie, concept_mask, dbpedia_mask, concept_vec, db_vec, rec in tqdm(train_dataset_loader):
                 seed_sets = []
                 batch_size = context.shape[0]
                 for b in range(batch_size):
@@ -453,26 +485,33 @@ class TrainLoop_fusion_gen():
                 self.model.train()
                 self.zero_grad()
 
-                scores, preds, rec_scores, rec_loss, gen_loss, mask_loss, info_db_loss, info_con_loss = self.model(context.cuda(), response.cuda(
-                ), mask_response.cuda(), concept_mask, dbpedia_mask, seed_sets, movie, concept_vec, db_vec, entity_vector.cuda(), rec, test=False)
+                scores, preds, rec_scores, rec_loss, gen_loss, mask_loss, info_db_loss, info_con_loss = self.model(
+                    context.cuda(), concept_mask, dbpedia_mask, concept_vec, db_vec, seed_sets, entity_vector.cuda(
+                    ), TrainType.TRAIN, response.cuda(), mask_response.cuda(), movie, rec)
 
                 joint_loss = gen_loss
 
-                losses.append([gen_loss])
                 self.backward(joint_loss)
                 self.update_params()
-                if num % 50 == 0:
-                    print('gen loss is %f' % (sum([l[0] for l in losses])/len(losses)))
-                    losses = []
+                loss_epoch += gen_loss.item()
                 num += 1
+                if num % 100 == 1:
+                    self.writer.add_scalar('Gen/Loss/Gen/Train', loss_epoch/num, step)
+                    step += 1
 
-            output_metrics_gen = self.val(True)
+            output_metrics_gen = self.val()
             if best_val_gen < output_metrics_gen["dist4"]:
                 pass
             else:
                 best_val_gen = output_metrics_gen["dist4"]
                 self.model.save_model()
                 print("generator model saved once------------------------------------------------")
+
+            self.writer.add_scalar('Gen/Dist/1/Valid', output_metrics_gen['dist1'], i)
+            self.writer.add_scalar('Gen/Dist/2/Valid', output_metrics_gen['dist2'], i)
+            self.writer.add_scalar('Gen/Dist/3/Valid', output_metrics_gen['dist3'], i)
+            self.writer.add_scalar('Gen/Dist/4/Valid', output_metrics_gen['dist4'], i)
+            self.writer.add_scalar('Gen/Loss/Gen/Valid', output_metrics_gen['loss'], i)
 
         _ = self.val(is_test=True)
 
@@ -496,35 +535,37 @@ class TrainLoop_fusion_gen():
         context_sum = []
         losses = []
         recs = []
-        for context, c_lengths, response, r_length, mask_response, mask_r_length, entity, entity_vector, movie, concept_mask, dbpedia_mask, concept_vec, db_vec, rec in tqdm(val_dataset_loader):
+        for context, c_lengths, response, r_length, mask_response, mask_r_length, entity, entity_vector, \
+                movie, concept_mask, dbpedia_mask, concept_vec, db_vec, rec in tqdm(val_dataset_loader):
             with torch.no_grad():
                 seed_sets = []
                 batch_size = context.shape[0]
                 for b in range(batch_size):
                     seed_set = entity[b].nonzero().view(-1).tolist()
                     seed_sets.append(seed_set)
-                _, _, _, _, gen_loss, mask_loss, info_db_loss, info_con_loss = self.model(context.cuda(), response.cuda(), mask_response.cuda(
-                ), concept_mask, dbpedia_mask, seed_sets, movie, concept_vec, db_vec, entity_vector.cuda(), rec, test=False)
-                scores, preds, rec_scores, rec_loss, _, mask_loss, info_db_loss, info_con_loss = self.model(context.cuda(), response.cuda(), mask_response.cuda(
-                ), concept_mask, dbpedia_mask, seed_sets, movie, concept_vec, db_vec, entity_vector.cuda(), rec, test=True, maxlen=20, bsz=batch_size)
+
+                _, _, _, _, gen_loss, mask_loss, info_db_loss, info_con_loss = self.model(
+                    context.cuda(), concept_mask, dbpedia_mask, concept_vec, db_vec, seed_sets, entity_vector.cuda(
+                    ), TrainType.TRAIN, response.cuda(), mask_response.cuda(), movie, rec)
+                scores, preds, rec_scores, rec_loss, _, mask_loss, info_db_loss, info_con_loss = self.model(
+                    context.cuda(), concept_mask, dbpedia_mask, concept_vec, db_vec, seed_sets, entity_vector.cuda(
+                    ), TrainType.VALID, response.cuda(), mask_response.cuda(), movie, rec, maxlen=20, bsz=batch_size)
 
             golden_sum.extend(self.vector2sentence(response.cpu()))
             inference_sum.extend(self.vector2sentence(preds.cpu()))
             context_sum.extend(self.vector2sentence(context.cpu()))
             recs.extend(rec.cpu())
             losses.append(torch.mean(gen_loss))
-            # print(losses)
-            # exit()
 
         self.metrics_cal_gen(losses, inference_sum, golden_sum, recs)
 
-        output_dict_gen = {}
+        output_dict_gen = {'loss': sum(losses)/len(losses)}
         for key in self.metrics_gen:
             if 'bleu' in key:
                 output_dict_gen[key] = self.metrics_gen[key]/self.metrics_gen['count']
             else:
                 output_dict_gen[key] = self.metrics_gen[key]
-        print(output_dict_gen)
+        pp.pprint(output_dict_gen)
 
         f = open('result/context_test.txt', 'w', encoding='utf-8')
         f.writelines([' '.join(sen)+'\n' for sen in context_sum])
@@ -578,8 +619,6 @@ class TrainLoop_fusion_gen():
 
         predict_s = preds
         golden_s = responses
-        # print(rec_loss[0])
-        #self.metrics_gen["ppl"]+=sum([exp(ppl) for ppl in rec_loss])/len(rec_loss)
         generated = []
 
         for out, tar, rec in zip(predict_s, golden_s, recs):
@@ -713,13 +752,9 @@ if __name__ == '__main__':
 
     if args.is_finetune == False:
         loop = TrainLoop_fusion_rec(vars(args), is_finetune=False)
-        # loop.model.load_model()
         loop.train()
     else:
         loop = TrainLoop_fusion_gen(vars(args), is_finetune=True)
-        # loop.train()
         loop.model.load_model()
-        #met = loop.val(True)
         loop.train()
     met = loop.val(True)
-    # print(met)
