@@ -12,6 +12,14 @@ from collections import defaultdict
 import numpy as np
 import json
 
+from enum import Enum
+
+
+class TrainType(Enum):
+    TRAIN = 1
+    VALID = 2
+    INFER = 3
+
 
 def _load_kg_embeddings(entity2entityId, dim, embedding_path):
     kg_embeddings = torch.zeros(len(entity2entityId), dim)
@@ -54,14 +62,16 @@ def _edge_list(kg, n_entity, hop):
         if relation_cnt[r] > 1000 and r not in relation_idx:
             relation_idx[r] = len(relation_idx)
 
-    return [(h, t, relation_idx[r]) for h, t, r in edge_list if relation_cnt[r] > 1000], len(relation_idx)
+    return [(h, t, relation_idx[r])
+            for h, t, r in edge_list if relation_cnt[r] > 1000], len(relation_idx)
 
 
 def concept_edge_list4GCN():
     node2index = json.load(open('data/key2index_3rd.json', encoding='utf-8'))
     f = open('data/conceptnet_edges2nd.txt', encoding='utf-8')
     edges = set()
-    stopwords = set([word.strip() for word in open('data/stopwords.txt', encoding='utf-8')])
+    stopwords = set([word.strip()
+                     for word in open('data/stopwords.txt', encoding='utf-8')])
     for line in f:
         lines = line.strip().split('\t')
         entity0 = node2index[lines[1].split('/')[0]]
@@ -75,7 +85,8 @@ def concept_edge_list4GCN():
 
 
 class CrossModel(nn.Module):
-    def __init__(self, opt, dictionary, is_finetune=False, padding_idx=0, start_idx=1, end_idx=2, longest_label=1):
+    def __init__(self, opt, dictionary, is_finetune=False,
+                 padding_idx=0, start_idx=1, end_idx=2, longest_label=1):
         # self.pad_idx = dictionary[dictionary.null_token]
         # self.start_idx = dictionary[dictionary.start_token]
         # self.end_idx = dictionary[dictionary.end_token]
@@ -94,7 +105,7 @@ class CrossModel(nn.Module):
         )
 
         self.concept_embeddings = _create_entity_embeddings(
-            opt['n_concept']+1, opt['dim'], 0)
+            opt['n_concept'] + 1, opt['dim'], 0)
         self.concept_padding = 0
 
         self.kg = pkl.load(
@@ -138,16 +149,16 @@ class CrossModel(nn.Module):
 
         self.self_attn_db = SelfAttentionLayer(opt['dim'], opt['dim'])
 
-        self.user_norm = nn.Linear(opt['dim']*2, opt['dim'])
+        self.user_norm = nn.Linear(opt['dim'] * 2, opt['dim'])
         self.gate_norm = nn.Linear(opt['dim'], 1)
-        self.copy_norm = nn.Linear(opt['embedding_size']*2 +
+        self.copy_norm = nn.Linear(opt['embedding_size'] * 2 +
                                    opt['embedding_size'], opt['embedding_size'])
         self.representation_bias = nn.Linear(opt['embedding_size'], len(dictionary) + 4)
 
         self.info_con_norm = nn.Linear(opt['dim'], opt['dim'])
         self.info_db_norm = nn.Linear(opt['dim'], opt['dim'])
         self.info_output_db = nn.Linear(opt['dim'], opt['n_entity'])
-        self.info_output_con = nn.Linear(opt['dim'], opt['n_concept']+1)
+        self.info_output_con = nn.Linear(opt['dim'], opt['n_concept'] + 1)
         self.info_con_loss = nn.MSELoss(size_average=False, reduce=False)
         self.info_db_loss = nn.MSELoss(size_average=False, reduce=False)
 
@@ -174,12 +185,12 @@ class CrossModel(nn.Module):
 
         #self.concept_GCN4gen=GCNConv(self.dim, opt['embedding_size'])
 
-        w2i = json.load(open('word2index_redial.json', encoding='utf-8'))
+        w2i = json.load(open('data/word2index_redial.json', encoding='utf-8'))
         self.i2w = {w2i[word]: word for word in w2i}
 
         self.mask4key = torch.Tensor(np.load('data/mask4key.npy')).cuda()
         self.mask4movie = torch.Tensor(np.load('data/mask4movie.npy')).cuda()
-        self.mask4 = self.mask4key+self.mask4movie
+        self.mask4 = self.mask4key + self.mask4movie
         if is_finetune:
             params = [self.dbpedia_RGCN.parameters(), self.concept_GCN.parameters(),
                       self.concept_embeddings.parameters(),
@@ -193,7 +204,8 @@ class CrossModel(nn.Module):
         """Return bsz start tokens."""
         return self.START.detach().expand(bsz, 1)
 
-    def decode_greedy(self, encoder_states, encoder_states_kg, encoder_states_db, attention_kg, attention_db, bsz, maxlen):
+    def decode_greedy(self, encoder_states, encoder_states_kg,
+                      encoder_states_db, attention_kg, attention_db, bsz, maxlen):
         """
         Greedy search
 
@@ -235,7 +247,8 @@ class CrossModel(nn.Module):
 
             # logits = self.output(latent)
             # F.linear(copy_latent, self.embeddings.weight)
-            con_logits = self.representation_bias(copy_latent)*self.mask4.unsqueeze(0).unsqueeze(0)
+            con_logits = self.representation_bias(
+                copy_latent) * self.mask4.unsqueeze(0).unsqueeze(0)
             voc_logits = F.linear(scores, self.embeddings.weight)
             # print(logits.size())
             # print(mem_logits.size())
@@ -268,7 +281,8 @@ class CrossModel(nn.Module):
         logits = torch.cat(logits, 1)
         return logits, xs
 
-    def decode_forced(self, encoder_states, encoder_states_kg, encoder_states_db, attention_kg, attention_db, ys):
+    def decode_forced(self, encoder_states, encoder_states_kg,
+                      encoder_states_db, attention_kg, attention_db, ys):
         """
         Decode with a fixed, true sequence, computing loss. Useful for
         training, or ranking fixed candidates.
@@ -317,17 +331,19 @@ class CrossModel(nn.Module):
 
         #logits = self.output(latent)
         # F.linear(copy_latent, self.embeddings.weight)
-        con_logits = self.representation_bias(copy_latent)*self.mask4.unsqueeze(0).unsqueeze(0)
+        con_logits = self.representation_bias(
+            copy_latent) * self.mask4.unsqueeze(0).unsqueeze(0)
         logits = F.linear(latent, self.embeddings.weight)
         # print(logits.size())
         # print(mem_logits.size())
         # gate=F.sigmoid(self.gen_gate_norm(latent))
 
-        sum_logits = logits+con_logits  # *(1-gate)
+        sum_logits = logits + con_logits  # *(1-gate)
         _, preds = sum_logits.max(dim=2)
         return logits, preds
 
-    def infomax_loss(self, con_nodes_features, db_nodes_features, con_user_emb, db_user_emb, con_label, db_label, mask):
+    def infomax_loss(self, con_nodes_features, db_nodes_features,
+                     con_user_emb, db_user_emb, con_label, db_label, mask):
         # batch*dim
         # node_count*dim
         con_emb = self.info_con_norm(con_user_emb)
@@ -336,14 +352,20 @@ class CrossModel(nn.Module):
         db_scores = F.linear(con_emb, db_nodes_features, self.info_output_db.bias)
 
         info_db_loss = torch.sum(self.info_db_loss(
-            db_scores, db_label.cuda().float()), dim=-1)*mask.cuda()
+            db_scores, db_label.cuda().float()), dim=-1) * mask.cuda()
         info_con_loss = torch.sum(self.info_con_loss(
-            con_scores, con_label.cuda().float()), dim=-1)*mask.cuda()
+            con_scores, con_label.cuda().float()), dim=-1) * mask.cuda()
 
         return torch.mean(info_db_loss), torch.mean(info_con_loss)
 
-    def forward(self, xs, ys, mask_ys, concept_mask, db_mask, seed_sets, labels, con_label, db_label, entity_vector, rec, test=True, cand_params=None, prev_enc=None, maxlen=None,
-                bsz=None):
+    # def forward(self, xs, ys, mask_ys, concept_mask, db_mask, seed_sets, labels, con_label, db_label,
+    #             entity_vector, rec, test=True, cand_params=None, prev_enc=None, maxlen=None,
+    #             bsz=None):
+    def forward(self,
+                xs, concept_mask, db_mask, con_label, db_label,
+                seed_sets, entity_vector, train_type: TrainType,
+                ys=None, mask_ys=None, labels=None, rec=None,
+                cand_params=None, prev_enc=None, maxlen=None, bsz=None):
         """
         Get output predictions from the model.
 
@@ -377,15 +399,16 @@ class CrossModel(nn.Module):
             - encoder_states are the output of model.encoder. Model specific types.
               Feed this back in to skip encoding on the next call.
         """
-        if test == False:
+        if train_type == TrainType.TRAIN:
             # TODO: get rid of longest_label
             # keep track of longest label we've ever seen
             # we'll never produce longer ones than that during prediction
             self.longest_label = max(self.longest_label, ys.size(1))
 
+        # init loss
+        rec_loss, gen_loss, mask_loss, info_db_loss, info_con_loss = None, None, None, None, None
+
         # use cached encoding if available
-        #xxs = self.embeddings(xs)
-        #mask=xs == self.pad_idx
         encoder_states = prev_enc if prev_enc is not None else self.encoder(xs)
 
         # graph network
@@ -393,6 +416,7 @@ class CrossModel(nn.Module):
         con_nodes_features = self.concept_GCN(
             self.concept_embeddings.weight, self.concept_edge_sets)
 
+        # recommendation ---------------------------------------------------------
         user_representation_list = []
         db_con_mask = []
         for i, seed_set in enumerate(seed_sets):
@@ -417,39 +441,32 @@ class CrossModel(nn.Module):
         uc_gate = F.sigmoid(self.gate_norm(user_emb))
         user_emb = uc_gate * db_user_emb + (1 - uc_gate) * con_user_emb
         entity_scores = F.linear(user_emb, db_nodes_features, self.output_en.bias)
-        #entity_scores = scores_db * gate + scores_con * (1 - gate)
-        # entity_scores=(scores_db+scores_con)/2
 
-        # mask loss
-        # m_emb=db_nodes_features[labels.cuda()]
-        # mask_mask=concept_mask!=self.concept_padding
-        mask_loss = 0  # self.mask_predict_loss(m_emb, attention, xs, mask_mask.cuda(),rec.float())
+        if train_type != TrainType.INFER:
 
-        info_db_loss, info_con_loss = self.infomax_loss(
-            con_nodes_features, db_nodes_features, con_user_emb, db_user_emb, con_label, db_label, db_con_mask)
+            # mask loss
+            mask_loss = 0
 
-        #entity_scores = F.softmax(entity_scores.cuda(), dim=-1).cuda()
+            info_db_loss, info_con_loss = self.infomax_loss(
+                con_nodes_features, db_nodes_features, con_user_emb, db_user_emb, con_label, db_label, db_con_mask)
 
-        rec_loss = self.criterion(entity_scores.squeeze(1).squeeze(1).float(), labels.cuda())
-        #rec_loss=self.klloss(entity_scores.squeeze(1).squeeze(1).float(), labels.float().cuda())
-        rec_loss = torch.sum(rec_loss*rec.float().cuda())
+            rec_loss = self.criterion(
+                entity_scores.squeeze(1).squeeze(1).float(), labels.cuda())
+            rec_loss = torch.sum(rec_loss * rec.float().cuda())
 
         self.user_rep = user_emb
 
-        # generation---------------------------------------------------------------------------------------------------
-        # self.concept_GCN4gen(con_nodes_features,self.concept_edge_sets)
+        # response generation-----------------------------------------------------
         con_nodes_features4gen = con_nodes_features
         con_emb4gen = con_nodes_features4gen[concept_mask]
         con_mask4gen = concept_mask != self.concept_padding
-        # kg_encoding=self.kg_encoder(con_emb4gen.cuda(),con_mask4gen.cuda())
         kg_encoding = (self.kg_norm(con_emb4gen), con_mask4gen.cuda())
 
         db_emb4gen = db_nodes_features[entity_vector]  # batch*50*dim
         db_mask4gen = entity_vector != 0
-        # db_encoding=self.db_encoder(db_emb4gen.cuda(),db_mask4gen.cuda())
         db_encoding = (self.db_norm(db_emb4gen), db_mask4gen.cuda())
 
-        if test == False:
+        if train_type == TrainType.TRAIN:
             # use teacher forcing
             scores, preds = self.decode_forced(
                 encoder_states, kg_encoding, db_encoding, con_user_emb, db_user_emb, mask_ys)
@@ -463,7 +480,8 @@ class CrossModel(nn.Module):
             )
             gen_loss = None
 
-        return scores, preds, entity_scores, rec_loss, gen_loss, mask_loss, info_db_loss, info_con_loss
+        return scores, preds, entity_scores, \
+            rec_loss, gen_loss, mask_loss, info_db_loss, info_con_loss
 
     def reorder_encoder_states(self, encoder_states, indices):
         """
@@ -557,18 +575,18 @@ class CrossModel(nn.Module):
         loss = self.criterion(output_view.cuda(), score_view.cuda())
         return loss
 
-    def save_model(self):
-        torch.save(self.state_dict(), 'saved_model/net_parameter1.pkl')
+    def save_model(self, model_path: str = 'saved_model/net_parameter1.pkl'):
+        torch.save(self.state_dict(), model_path)
 
-    def load_model(self):
-        self.load_state_dict(torch.load('saved_model/net_parameter1.pkl'))
+    def load_model(self, model_path: str = 'saved_model/net_parameter1.pkl'):
+        self.load_state_dict(torch.load(model_path))
 
     def output(self, tensor):
         # project back to vocabulary
         output = F.linear(tensor, self.embeddings.weight)
         up_bias = self.user_representation_to_bias_2(
             F.relu(self.user_representation_to_bias_1(self.user_rep)))
-        # up_bias = self.user_representation_to_bias_3(F.relu(self.user_representation_to_bias_2(F.relu(self.user_representation_to_bias_1(self.user_representation)))))
+
         # Expand to the whole sequence
         up_bias = up_bias.unsqueeze(dim=1)
         output += up_bias
