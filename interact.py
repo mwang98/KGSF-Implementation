@@ -1,6 +1,6 @@
 from typing import List
 
-from model import CrossModel
+from model import CrossModel, TrainType
 from dataset import dataset, CRSdataset
 import torch
 from torch import optim
@@ -67,26 +67,13 @@ def setup_args():
     return train
 
 
-class IConversationalRecommender():
-    def __init__(self, opt):
-        self.opt = opt
-        self.model = CrossModel(self.opt, is_finetune=False)
-
-        self.logs = []
-        self.context = []
-
-    def prompt(self):
-        self.input = input('KGSF> ')
-
-        # TODO add popup of movie items for selection
-
-
-class Pocessor():
+class Processor():
     def __init__(self, opt):
         # dbpedia (kg of movie)
         self.id2entity = pkl.load(open('data/id2entity.pkl', 'rb'))
         self.entity2entityId = pkl.load(open('data/entity2entityId.pkl', 'rb'))
-        self.entity_max = len(self.entity2entityId)
+        self.entity_pad = len(self.entity2entityId)
+        self.concept_pad = 0
 
         # concepts from conceptNet
         self.key2index = json.load(open('data/key2index_3rd.json', encoding='utf-8'))
@@ -98,21 +85,45 @@ class Pocessor():
         self.max_c_length = opt['max_c_length']
         self.max_count = opt['max_count']
         self.entity_num = opt['n_entity']
+        self.concept_num = opt['n_concept'] + 1
 
-    def data_process(self, log: List[str]):
+    def data_process(self, logs: List[str]):
         # tokenize context
-        contexts = [self.tokenize(sen) for sen in log]
+        contexts = [self.tokenize(sen) for sen in logs]
+
         # extract movie from context
         entities = reduce(lambda x, y: x+y, [self.detect_movie(sen) for sen in contexts])
         entities_dedup = set()
-        for entity in entities:
-            entities_dedup.add(entity)
-        entities_dedup = list(entities_dedup)
+        for en in entities:
+            entities_dedup.add(en)
+        entities_dedup = np.array(list(entities_dedup), dtype=np.int64)
 
         # index context and get mask of concept net and dbpedia
         indexed_context, c_lengths, concept_mask, dbpedia_mask = \
             self.padding_context(contexts)
-        return indexed_context, c_lengths, concept_mask, dbpedia_mask, entities_dedup
+
+        # to ndarray
+        indexed_context = np.array(indexed_context)
+        concept_mask = np.array(concept_mask)
+        dbpedia_mask = np.array(dbpedia_mask)
+
+        # bit mask
+        entity_bitmask = np.zeros(self.entity_num)
+        db_bitmask = np.zeros(self.entity_num)
+        concept_bitmask = np.zeros(self.concept_num)
+
+        if len(entities_dedup) != 0:
+            entity_bitmask[entities_dedup] = 1
+        concept_bitmask[concept_mask] = 1
+        db_bitmask[dbpedia_mask] = 1
+
+        # modification
+        entities_dedup = np.pad(entities_dedup, (0, 50-len(entities_dedup)), 'constant', constant_values=(0, 0)) \
+            if 50 > len(entities_dedup) else entities_dedup
+        concept_bitmask[self.concept_pad] = db_bitmask[self.entity_pad] = 0
+
+        return indexed_context, c_lengths, concept_mask, concept_bitmask, \
+            dbpedia_mask, db_bitmask, entities_dedup, entity_bitmask
 
     def tokenize(self, sentence: str) -> List[str]:
         token_text = word_tokenize(sentence)
@@ -159,22 +170,22 @@ class Pocessor():
             # sentence vector
             sen_vector.append(self.word2index.get(word, unk))
             # concept vector
-            concept_mask.append(self.key2index.get(word.lower(), 0))
+            concept_mask.append(self.key2index.get(word.lower(), self.concept_pad))
             # movie vector
             if '@' in word:
                 try:
                     entity = self.id2entity[int(word[1:])]
                     entityId = self.entity2entityId[entity]
                 except:
-                    entityId = self.entity_max
+                    entityId = self.entity_pad
                 dbpedia_mask.append(entityId)
             else:
-                dbpedia_mask.append(self.entity_max)
+                dbpedia_mask.append(self.entity_pad)
 
         # end of sentence
         sen_vector.append(end)
-        concept_mask.append(0)
-        dbpedia_mask.append(self.entity_max)
+        concept_mask.append(self.concept_pad)
+        dbpedia_mask.append(self.entity_pad)
 
         # pad or truncate
         if len(sen_vector) > max_length:
@@ -186,25 +197,79 @@ class Pocessor():
             length = len(sen_vector)
             return sen_vector+(max_length-length)*[pad], \
                 length,\
-                concept_mask+(max_length-length)*[0], \
-                dbpedia_mask+(max_length-length)*[self.entity_max]
+                concept_mask+(max_length-length)*[self.concept_pad], \
+                dbpedia_mask+(max_length-length)*[self.entity_pad]
+
+
+class IConversationalRecommender():
+    def __init__(self, opt):
+        # word from corpus trained by gensim
+        self.word2index = json.load(open('data/word2index_redial.json', encoding='utf-8'))
+        self.index2word = {self.word2index[key]: key for key in self.word2index}
+
+        # model
+        self.opt = opt
+        self.model = CrossModel(opt, self.word2index, is_finetune=True).cuda()
+        self.processor = Processor(opt)
+
+        # conversation logs
+        self.logs = []
+
+    def prompt(self):
+        self.input = input('KGSF> ')
+
+        self.logs.append(self.input)
+
+        # TODO add popup of movie items for selection
+
+    def to_batch_tensor(self, *args):
+        args = [torch.from_numpy(arg) for arg in args]
+        return [torch.unsqueeze(arg, 0) for arg in args]
+
+    def vector2sentence(self, sen: List[int]):
+        sentence = []
+        for word in sen:
+            try:
+                if word > 3:
+                    sentence.append(self.index2word[word])
+                elif word == 3:
+                    sentence.append('_UNK_')
+            except:
+                print("OOV", word)
+        return ' '.join(word for word in sentence)
+
+    def start(self):
+        self.model.load_model(model_path='saved_model/net_parameter1_1.pkl')
+        while True:
+            self.prompt()
+
+            if self.input == '':
+                break
+
+            # get model input from logs
+            context, length, concept_mask, concept_bitmask, dbpedia_mask, dbpedia_bitmask, \
+                entities, entity_bitmask = self.processor.data_process(self.logs)
+            seed_sets = [entities.nonzero()[0].tolist()]
+
+            # inference
+            self.model.eval()
+            with torch.no_grad():
+                context, concept_mask, concept_bitmask, dbpedia_mask, dbpedia_bitmask, entities, entity_bitmask = \
+                    self.to_batch_tensor(context, concept_mask, concept_bitmask,
+                                         dbpedia_mask, dbpedia_bitmask, entities, entity_bitmask)
+
+                scores, preds, rec_scores, _, _, _, _, _ = self.model(
+                    context.cuda(), concept_mask, dbpedia_mask, concept_bitmask, dbpedia_bitmask, seed_sets, entities.cuda(
+                    ), TrainType.INFER, maxlen=20, bsz=1)
+
+            response = self.vector2sentence(
+                preds.squeeze().detach().cpu().numpy().tolist())
+            self.logs.append(response)
+            print("Response> ", response)
 
 
 if __name__ == '__main__':
-    opt = setup_args().parse_args()
+    opt = vars(setup_args().parse_args())
 
-    processor = Pocessor(vars(opt))
-
-    while True:
-        sentence = input('KGSF> ')
-
-        if sentence != '':
-            vector, length, concept_mask, dbpedia_mask, entities = processor.data_process(
-                sentence)
-            print(length, f'entities: {entities}',
-                  f'vector: {vector[:length]}',
-                  f'concept_mask: {concept_mask[:length]}',
-                  f'dbpedia_mask: {dbpedia_mask[:length]}',
-                  sep='\n')
-        else:
-            break
+    agent = IConversationalRecommender(opt)
+    agent.start()
