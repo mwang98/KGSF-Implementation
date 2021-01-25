@@ -567,11 +567,15 @@ class TrainLoop_fusion_gen():
                 output_dict_gen[key] = self.metrics_gen[key]
         pp.pprint(output_dict_gen)
 
-        f = open('result/context_test.txt', 'w', encoding='utf-8')
+        # output conversations and response
+        context_path = 'result/context_test.txt' if is_test else 'result/context_valid.txt'
+        inference_path = 'result/output_test.txt' if is_test else 'result/output_valid.txt'
+
+        f = open(context_path, 'w', encoding='utf-8')
         f.writelines([' '.join(sen)+'\n' for sen in context_sum])
         f.close()
 
-        f = open('result/output_test.txt', 'w', encoding='utf-8')
+        f = open(inference_path, 'w', encoding='utf-8')
         f.writelines([' '.join(sen)+'\n' for sen in inference_sum])
         f.close()
         return output_dict_gen
