@@ -576,9 +576,11 @@ class CrossModel(nn.Module):
         return loss
 
     def save_model(self, model_path: str = 'saved_model/net_parameter1.pkl'):
+        print(f'Save model to: {model_path}')
         torch.save(self.state_dict(), model_path)
 
     def load_model(self, model_path: str = 'saved_model/net_parameter1.pkl'):
+        print(f'Load model from: {model_path}')
         self.load_state_dict(torch.load(model_path))
 
     def output(self, tensor):
