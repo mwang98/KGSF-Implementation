@@ -20,6 +20,7 @@ def _normalize(tensor, norm_layer):
     size = tensor.size()
     return norm_layer(tensor.view(-1, size[-1])).view(size)
 
+
 def _build_encoder(opt, dictionary, embedding=None, padding_idx=None, reduction=True,
                    n_positions=1024):
     return TransformerEncoder(
@@ -39,13 +40,14 @@ def _build_encoder(opt, dictionary, embedding=None, padding_idx=None, reduction=
         n_positions=n_positions,
     )
 
+
 def _build_encoder4kg(opt, padding_idx=None, reduction=True,
-                   n_positions=1024):
+                      n_positions=1024):
     return TransformerEncoder4kg(
-        n_heads=1,#opt['n_heads'],
-        n_layers=1,#opt['n_layers'],
-        embedding_size=opt['dim'],#opt['embedding_size'],
-        ffn_size=opt['dim'],#opt['ffn_size'],
+        n_heads=1,  # opt['n_heads'],
+        n_layers=1,  # opt['n_layers'],
+        embedding_size=opt['dim'],  # opt['embedding_size'],
+        ffn_size=opt['dim'],  # opt['ffn_size'],
         dropout=opt['dropout'],
         attention_dropout=opt['attention_dropout'],
         relu_dropout=opt['relu_dropout'],
@@ -56,8 +58,9 @@ def _build_encoder4kg(opt, padding_idx=None, reduction=True,
         n_positions=n_positions,
     )
 
+
 def _build_encoder_mask(opt, dictionary, embedding=None, padding_idx=None, reduction=True,
-                   n_positions=1024):
+                        n_positions=1024):
     return TransformerEncoder_mask(
         n_heads=opt['n_heads'],
         n_layers=opt['n_layers'],
@@ -74,6 +77,7 @@ def _build_encoder_mask(opt, dictionary, embedding=None, padding_idx=None, reduc
         reduction=reduction,
         n_positions=n_positions,
     )
+
 
 def _build_decoder(opt, dictionary, embedding=None, padding_idx=None,
                    n_positions=1024):
@@ -93,8 +97,9 @@ def _build_decoder(opt, dictionary, embedding=None, padding_idx=None,
         n_positions=n_positions,
     )
 
+
 def _build_decoder4kg(opt, dictionary, embedding=None, padding_idx=None,
-                   n_positions=1024):
+                      n_positions=1024):
     return TransformerDecoderKG(
         n_heads=opt['n_heads'],
         n_layers=opt['n_layers'],
@@ -111,6 +116,7 @@ def _build_decoder4kg(opt, dictionary, embedding=None, padding_idx=None,
         n_positions=n_positions,
     )
 
+
 def create_position_codes(n_pos, dim, out):
     position_enc = np.array([
         [pos / np.power(10000, 2 * j / dim) for j in range(dim // 2)]
@@ -121,6 +127,7 @@ def create_position_codes(n_pos, dim, out):
     out[:, 1::2] = torch.FloatTensor(np.cos(position_enc)).type_as(out)
     out.detach_()
     out.requires_grad = False
+
 
 class BasicAttention(nn.Module):
     def __init__(self, dim=1, attn='cosine'):
@@ -145,6 +152,7 @@ class BasicAttention(nn.Module):
         lhs_emb = lhs_emb.add(xs)
 
         return lhs_emb.squeeze(self.dim - 1), l2
+
 
 class MultiHeadAttention(nn.Module):
     def __init__(self, n_heads, dim, dropout=0):
@@ -229,6 +237,7 @@ class MultiHeadAttention(nn.Module):
 
         return out
 
+
 class TransformerFFN(nn.Module):
     def __init__(self, dim, dim_hidden, relu_dropout=0):
         super(TransformerFFN, self).__init__()
@@ -245,8 +254,10 @@ class TransformerFFN(nn.Module):
         x = self.lin2(x)
         return x
 
+
 class TransformerResponseWrapper(nn.Module):
     """Transformer response rapper. Pushes input through transformer and MLP"""
+
     def __init__(self, transformer, hdim):
         super(TransformerResponseWrapper, self).__init__()
         dim = transformer.out_dim
@@ -259,6 +270,7 @@ class TransformerResponseWrapper(nn.Module):
 
     def forward(self, *args):
         return self.mlp(self.transformer(*args))
+
 
 class TransformerEncoder4kg(nn.Module):
     """
@@ -286,6 +298,7 @@ class TransformerEncoder4kg(nn.Module):
         sequence.
     :param int n_positions: Size of the position embeddings matrix.
     """
+
     def __init__(
         self,
         n_heads,
@@ -363,6 +376,7 @@ class TransformerEncoder4kg(nn.Module):
             output = tensor
             return output, mask
 
+
 class TransformerEncoderLayer(nn.Module):
     def __init__(
         self,
@@ -393,6 +407,7 @@ class TransformerEncoderLayer(nn.Module):
         tensor *= mask.unsqueeze(-1).type_as(tensor)
         return tensor
 
+
 class TransformerEncoder(nn.Module):
     """
     Transformer encoder module.
@@ -419,6 +434,7 @@ class TransformerEncoder(nn.Module):
         sequence.
     :param int n_positions: Size of the position embeddings matrix.
     """
+
     def __init__(
         self,
         n_heads,
@@ -488,15 +504,15 @@ class TransformerEncoder(nn.Module):
                 dropout=dropout,
             ))
 
-    def forward(self, input):
+    def forward(self, input_):
         """
             input data is a FloatTensor of shape [batch, seq_len, dim]
             mask is a ByteTensor of shape [batch, seq_len], filled with 1 when
             inside the sequence and 0 outside.
         """
-        mask = input != self.padding_idx
+        mask = input_ != self.padding_idx
         positions = (mask.cumsum(dim=1, dtype=torch.int64) - 1).clamp_(min=0)
-        tensor = self.embeddings(input)
+        tensor = self.embeddings(input_)
         if self.embeddings_scale:
             tensor = tensor * np.sqrt(self.dim)
         tensor = tensor + self.position_embeddings(positions).expand_as(tensor)
@@ -514,6 +530,7 @@ class TransformerEncoder(nn.Module):
         else:
             output = tensor
             return output, mask
+
 
 class TransformerEncoder_mask(nn.Module):
     """
@@ -541,6 +558,7 @@ class TransformerEncoder_mask(nn.Module):
         sequence.
     :param int n_positions: Size of the position embeddings matrix.
     """
+
     def __init__(
         self,
         n_heads,
@@ -621,9 +639,9 @@ class TransformerEncoder_mask(nn.Module):
         tensor = self.embeddings(input)
         if self.embeddings_scale:
             tensor = tensor * np.sqrt(self.dim)
-        p_length=tensor.size()[1]
+        p_length = tensor.size()[1]
         tensor = tensor + self.position_embeddings(positions).expand_as(tensor)
-        tensor=torch.cat([tensor,m_emb.unsqueeze(1).repeat(1,p_length,1)],dim=-1)
+        tensor = torch.cat([tensor, m_emb.unsqueeze(1).repeat(1, p_length, 1)], dim=-1)
         # --dropout on the embeddings
         tensor = self.dropout(tensor)
 
@@ -639,6 +657,7 @@ class TransformerEncoder_mask(nn.Module):
         else:
             output = tensor
             return output, mask
+
 
 class TransformerDecoderLayer(nn.Module):
     def __init__(
@@ -707,6 +726,7 @@ class TransformerDecoderLayer(nn.Module):
         # broadcast across batch
         mask = mask.unsqueeze(0).expand(bsz, -1, -1)
         return mask
+
 
 class TransformerDecoder(nn.Module):
     """
@@ -799,6 +819,7 @@ class TransformerDecoder(nn.Module):
             tensor = layer(tensor, encoder_output, encoder_mask)
 
         return tensor, None
+
 
 class TransformerDecoderLayerKG(nn.Module):
     def __init__(
@@ -900,6 +921,7 @@ class TransformerDecoderLayerKG(nn.Module):
         mask = mask.unsqueeze(0).expand(bsz, -1, -1)
         return mask
 
+
 class TransformerDecoderKG(nn.Module):
     """
     Transformer Decoder layer.
@@ -990,12 +1012,15 @@ class TransformerDecoderKG(nn.Module):
         tensor = self.dropout(tensor)  # --dropout
 
         for layer in self.layers:
-            tensor = layer(tensor, encoder_output, encoder_mask, kg_encoder_output, kg_encoder_mask, db_encoder_output, db_encoder_mask)
+            tensor = layer(tensor, encoder_output, encoder_mask, kg_encoder_output,
+                           kg_encoder_mask, db_encoder_output, db_encoder_mask)
 
         return tensor, None
 
+
 class TransformerMemNetModel(nn.Module):
     """Model which takes context, memories, candidates and encodes them"""
+
     def __init__(self, opt, dictionary):
         super().__init__()
         self.opt = opt
@@ -1101,6 +1126,7 @@ class TransformerMemNetModel(nn.Module):
 
         return context_h, cands_h
 
+
 class TorchGeneratorModel(nn.Module):
     """
     This Interface expects you to implement model with the following reqs:
@@ -1114,6 +1140,7 @@ class TorchGeneratorModel(nn.Module):
     :attribute model.output:
         takes decoder outputs and returns distr over dictionary
     """
+
     def __init__(
         self,
         padding_idx=0,
@@ -1345,4 +1372,3 @@ class TorchGeneratorModel(nn.Module):
             )
 
         return scores, preds, encoder_states
-
