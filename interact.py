@@ -216,6 +216,10 @@ class IConversationalRecommender():
         # mapping from movie ids to names
         self.id2moviename = pkl.load(open('data/movie_id2name.pkl', 'rb'))
 
+        # dbpedia
+        self.entity2entityId = pkl.load(open('data/entity2entityId.pkl', 'rb'))
+        self.entityId2entity = dict([(val, key) for key, val in self.entity2entityId.items()])
+
         # model
         self.opt = opt
         self.model = CrossModel(opt, self.word2index, is_finetune=True).cuda()
@@ -236,7 +240,7 @@ class IConversationalRecommender():
                                            entities.cuda(), 3))
 
     def prompt(self):
-        self.input = input('KGSF> ')
+        self.input = input('KGSF> ').strip()
 
         self.logs.append(self.input)
 
