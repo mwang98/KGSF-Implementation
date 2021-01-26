@@ -3,16 +3,15 @@ from typing import List
 from model import CrossModel, TrainType
 from dataset import dataset, CRSdataset
 import torch
+from torch.utils.tensorboard import SummaryWriter
 from torch import optim
 import torch.nn as nn
 import pickle as pkl
 import argparse
 import json
-import signal
 import numpy as np
 from tqdm import tqdm
 import os
-from copy import deepcopy
 from nltk import word_tokenize
 from functools import reduce
 os.environ['CUDA_VISIBLE_DEVICES'] = '3'
@@ -64,6 +63,10 @@ def setup_args():
     train.add_argument("-using_all_hops", "--using_all_hops", type=bool, default=True)
     train.add_argument("-num_bases", "--num_bases", type=int, default=8)
 
+    # model parameter
+    train.add_argument("-model_path", "--model_path", type=str,
+                       default='saved_model/net_parameter1.pkl')
+
     return train
 
 
@@ -75,7 +78,7 @@ class Processor():
         self.entity_pad = len(self.entity2entityId)
         self.concept_pad = 0
 
-        # concepts from conceptNet
+        # concepts from conceptNet (kg of concepts)
         self.key2index = json.load(open('data/key2index_3rd.json', encoding='utf-8'))
 
         # word from corpus trained by gensim
@@ -190,11 +193,11 @@ class Processor():
         # pad or truncate
         if len(sen_vector) > max_length:
             return sen_vector[:max_length], \
-                max_length, \
+                np.array(max_length), \
                 concept_mask[:max_length], \
                 dbpedia_mask[:max_length]
         else:
-            length = len(sen_vector)
+            length = np.array(len(sen_vector))
             return sen_vector+(max_length-length)*[pad], \
                 length,\
                 concept_mask+(max_length-length)*[self.concept_pad], \
@@ -203,9 +206,15 @@ class Processor():
 
 class IConversationalRecommender():
     def __init__(self, opt):
+        # tensorboard
+        self.writer = SummaryWriter()
+
         # word from corpus trained by gensim
         self.word2index = json.load(open('data/word2index_redial.json', encoding='utf-8'))
         self.index2word = {self.word2index[key]: key for key in self.word2index}
+
+        # mapping from movie ids to names
+        self.id2moviename = pkl.load(open('data/movie_id2name.pkl', 'rb'))
 
         # model
         self.opt = opt
@@ -214,6 +223,17 @@ class IConversationalRecommender():
 
         # conversation logs
         self.logs = []
+
+    def visualize_model(self):
+        sample_sen = 'Sample sentence for model visualization'
+        context, length, concept_mask, concept_bitmask, dbpedia_mask, dbpedia_bitmask, \
+            entities, entity_bitmask = self.to_batch_tensor(
+                *(self.processor.data_process([sample_sen])))
+
+        seed_sets = [123]
+        self.writer.add_graph(self.model, (context.cuda(), concept_mask, dbpedia_mask,
+                                           concept_bitmask, dbpedia_bitmask, seed_sets,
+                                           entities.cuda(), 3))
 
     def prompt(self):
         self.input = input('KGSF> ')
@@ -227,23 +247,37 @@ class IConversationalRecommender():
         return [torch.unsqueeze(arg, 0) for arg in args]
 
     def vector2sentence(self, sen: List[int]):
-        sentence = []
-        for word in sen:
+        sentence_id = []
+        sentence_name = []
+        for idx in sen:
             try:
-                if word > 3:
-                    sentence.append(self.index2word[word])
-                elif word == 3:
-                    sentence.append('_UNK_')
+                if idx >= 3:
+                    # without replace movie id with name
+                    word = '_UNK_' if idx == 3 else self.index2word[idx]
+                    sentence_id.append(word)
+                    # replace id with name
+                    word = self.convert_id_to_name(word) if word[0] == '@' else word
+                    sentence_name.append(word)
             except:
-                print("OOV", word)
-        return ' '.join(word for word in sentence)
+                print("OOV", idx)
+        return ' '.join(w for w in sentence_name), ' '.join(w for w in sentence_id)
+
+    def convert_id_to_name(self, movieId: str) -> str:
+        try:
+            return self.id2moviename[movieId[1:]]
+        except:
+            return movieId
 
     def start(self):
-        self.model.load_model(model_path='saved_model/net_parameter1_1.pkl')
+        self.model.load_model(model_path=self.opt['model_path'])
         while True:
             self.prompt()
 
             if self.input == '':
+                print('End of conversation ...')
+                self.logs = []
+                continue
+            elif self.input == 'exit()':
                 break
 
             # get model input from logs
@@ -262,10 +296,10 @@ class IConversationalRecommender():
                     context.cuda(), concept_mask, dbpedia_mask, concept_bitmask, dbpedia_bitmask, seed_sets, entities.cuda(
                     ), TrainType.INFER, maxlen=20, bsz=1)
 
-            response = self.vector2sentence(
+            response_display, response_log = self.vector2sentence(
                 preds.squeeze().detach().cpu().numpy().tolist())
-            self.logs.append(response)
-            print("Response> ", response)
+            self.logs.append(response_log)
+            print("Response> ", response_display)
 
 
 if __name__ == '__main__':
