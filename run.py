@@ -50,6 +50,8 @@ except ImportError:
 
 os.environ['CUDA_VISIBLE_DEVICES'] = '3'
 
+ppl = pprint.PrettyPrinter(indent=4, width=200, stream=open('output.log', 'w'))
+
 
 def is_distributed():
     """
@@ -280,8 +282,10 @@ class TrainLoop_fusion_rec():
                             "loss": 0, "gate": 0, "count": 0, 'gate_count': 0}
         self.model.eval()
         if is_test:
+            print('Load dataset from: data/test_data.jsonl')
             val_dataset = dataset('data/test_data.jsonl', self.opt)
         else:
+            print('Load dataset from: data/valid_data.jsonl')
             val_dataset = dataset('data/valid_data.jsonl', self.opt)
         val_set = CRSdataset(val_dataset.data_process(),
                              self.opt['n_entity'], self.opt['n_concept'])
@@ -312,7 +316,7 @@ class TrainLoop_fusion_rec():
         output_dict_rec = {key: self.metrics_rec[key] /
                            self.metrics_rec['count'] for key in self.metrics_rec}
         output_dict_rec['loss'] = sum(losses)/len(losses)
-        print(output_dict_rec)
+        pp.pprint(output_dict_rec)
 
         return output_dict_rec
 
@@ -465,54 +469,67 @@ class TrainLoop_fusion_gen():
 
     def train(self):
         self.model.load_model()
-        best_val_gen = 1000
+        best_val_gen = 0
         step = 0
         gen_stop = False
         for i in range(self.epoch*3):
+            # get dataloader
             train_set = CRSdataset(self.train_dataset.data_process(
                 True), self.opt['n_entity'], self.opt['n_concept'])
             train_dataset_loader = torch.utils.data.DataLoader(dataset=train_set,
                                                                batch_size=self.batch_size,
                                                                shuffle=False)
+
+            # train
             num, loss_epoch = 0, 0
             for context, c_lengths, response, r_length, mask_response, mask_r_length, entity, entity_vector, \
                     movie, concept_mask, dbpedia_mask, concept_vec, db_vec, rec in tqdm(train_dataset_loader):
+
+                # get movies appeared in context
                 seed_sets = []
                 batch_size = context.shape[0]
                 for b in range(batch_size):
                     seed_set = entity[b].nonzero().view(-1).tolist()
                     seed_sets.append(seed_set)
+
+                # set mode
                 self.model.train()
                 self.zero_grad()
 
+                # forward
                 scores, preds, rec_scores, rec_loss, gen_loss, mask_loss, info_db_loss, info_con_loss = self.model(
                     context.cuda(), concept_mask, dbpedia_mask, concept_vec, db_vec, seed_sets, entity_vector.cuda(
                     ), TrainType.TRAIN, response.cuda(), mask_response.cuda(), movie, rec)
 
+                # get loss and update model
                 joint_loss = gen_loss
-
                 self.backward(joint_loss)
                 self.update_params()
                 loss_epoch += gen_loss.item()
+
+                # monitor loss on training set
                 num += 1
                 if num % 100 == 1:
                     self.writer.add_scalar('Gen/Loss/Gen/Train', loss_epoch/num, step)
                     step += 1
 
+            # validate
             output_metrics_gen = self.val()
-            if best_val_gen < output_metrics_gen["dist4"]:
+            if best_val_gen > output_metrics_gen["dist4"]:
                 pass
             else:
                 best_val_gen = output_metrics_gen["dist4"]
                 self.model.save_model()
                 print("generator model saved once------------------------------------------------")
 
+            # monitor perfomance on validation set
             self.writer.add_scalar('Gen/Dist/1/Valid', output_metrics_gen['dist1'], i)
             self.writer.add_scalar('Gen/Dist/2/Valid', output_metrics_gen['dist2'], i)
             self.writer.add_scalar('Gen/Dist/3/Valid', output_metrics_gen['dist3'], i)
             self.writer.add_scalar('Gen/Dist/4/Valid', output_metrics_gen['dist4'], i)
             self.writer.add_scalar('Gen/Loss/Gen/Valid', output_metrics_gen['loss'], i)
 
+        # testing
         _ = self.val(is_test=True)
 
     def val(self, is_test=False):
@@ -522,8 +539,10 @@ class TrainLoop_fusion_gen():
                             "loss": 0, "gate": 0, "count": 0, 'gate_count': 0}
         self.model.eval()
         if is_test:
+            print('Load dataset from: data/test_data.jsonl')
             val_dataset = dataset('data/test_data.jsonl', self.opt)
         else:
+            print('Load dataset from: data/valid_data.jsonl')
             val_dataset = dataset('data/valid_data.jsonl', self.opt)
         val_set = CRSdataset(val_dataset.data_process(
             True), self.opt['n_entity'], self.opt['n_concept'])
@@ -566,6 +585,8 @@ class TrainLoop_fusion_gen():
             else:
                 output_dict_gen[key] = self.metrics_gen[key]
         pp.pprint(output_dict_gen)
+        ppl.pprint('Test' if is_test else 'Valid')
+        ppl.pprint(output_dict_gen)
 
         # output conversations and response
         context_path = 'result/context_test.txt' if is_test else 'result/context_valid.txt'
@@ -755,10 +776,14 @@ if __name__ == '__main__':
     pp.pprint(vars(args))
 
     if args.is_finetune == False:
+        print('Recommendation Task ...')
         loop = TrainLoop_fusion_rec(vars(args), is_finetune=False)
-        loop.train()
+        # loop.train()
     else:
+        print('Conversation Task ...')
         loop = TrainLoop_fusion_gen(vars(args), is_finetune=True)
-        loop.model.load_model()
-        loop.train()
-    met = loop.val(True)
+        # loop.train()
+
+    loop.model.load_model()
+    loop.val()
+    loop.val(True)
